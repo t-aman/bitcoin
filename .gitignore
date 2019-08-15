@@ -5,9 +5,6 @@
 *.db
 config*
 
-# gitignorefile
-#.gitignore
-
 # VScode
 .vscode/*
 !.vscode/settings.json
