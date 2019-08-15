@@ -1,124 +1,119 @@
 <?php
-/*! 
- *  ビットコイン自動売買システム
- **/
+/*!-----------------------------------------------------------------
+ * ビットコイン自動売買（bitFlyer）
+ * 前回価格から任意の価格の増減があった場合に自動売買を行う 
+ * ------------------------------------------------------------------
+ */
 
-	// スケジュール実行日時
-	$dtime = date("Y-m-d H:i:s");							// 日時
-	$hour  = intval(date("G"));								// 時
-	$min   = intval(date("i"));								// 分
-	
-	// ファイル定義
-	$file_log = dirname(__FILE__)."/log.txt";				// ログファイル
-	$file_last_rc = dirname(__FILE__)."/last_rec.txt";		// 最終価格
-	$file_last_si = dirname(__FILE__)."/last_side.txt";		// 最終区分 BUY or SELL
+/*!------------------------------------------------
+ * 環境設定
+ * ------------------------------------------------
+ */
 
-	// 管理ログ送信
-	if( $hour == 7 && $min == 0 ) {
-		putMail( "【全体ログ】：" . file_get_contents($file_log) );
-		unlink($file_log);
-	}
+// API設定、ファイル設定
+define("BITFLYER_API_KEY", '【API Key】');
+define("BITFLYER_API_SECRET", '【API Secret】');
+define("BITFLYER_API_URI", 'https://api.bitflyer.jp/v1/');
+define("PATH_LOG_FILE", __DIR__ . '/data_log.txt');		// ログファイル
+define("PATH_DATA_LAST", __DIR__ . '/data_last.txt');	// 前回データ保存：最終価格
+define("PATH_DATA_ORDER", __DIR__ . '/data_order.txt');	// 前回データ保存：注文区分 ※BUY or SELL
 
-	// 前回売買、前回価格取得
-	$pre_si   = file_get_contents($file_last_si);
-	$pre_cc   = intval( file_get_contents($file_last_rc) );
+// 注文パラメタ（判定価格）前回との差分額がこの範囲の場合に注文を行う
+$order_sell_price	= array(5000, 500000);			// 売却判定価格（下限～上限）単位：円
+$order_buy_price	= array(-500000, -5000);		// 購入判定価格（下限～上限）単位：円
 
-	// 最新価格取得
-	$file_get_cc  = json_decode( file_get_contents("https://coincheck.com/api/ticker/") ,true);
-	$last_cc      = intval( $file_get_cc["last"] );
+// 注文パラメタ（ひな形設定）
+$order_param = array(
+	'product_code'		=> 'BTC_JPY',		// 注文プロダクト
+	'child_order_type'	=> 'MARKET',		// 指値注文 "LIMIT", 成行注文 "MARKET"
+	'side'				=> '',				// 買い注文 "BUY", 売り注文 "SELL" 【判定時に自動設定】
+	'price'				=> 0,				// "LIMIT" の場合は価格
+	'size'				=> 0.001,			// 注文数量(1～0.001) 単位：bitcoin
+	'minute_to_expire'	=> 300,				// 期限切れ時間（分）
+	'time_in_force'		=> 'GTC'			// 執行数量条件 "GTC", "IOC", "FOK"
+);
 
-	// 比較価格
-	$diff_cc  = intval( $last_cc  - $pre_cc );
-	$diff_msg = $pre_si . ":" . $pre_cc . "→" . $last_cc . "(" . $diff_cc . ")";
-
-	// 取引実行
-	orderJudgment();
-	echo "<br>OK ".$dtime;
-
-exit;
-
-// 管理者メール
-function putMail($msg,$title = "_ログ") {
-	$mail_from = "bitcoin@saneicraft.com";
-	$mail_to   = "saneicraft@gmail.com";
-	$mail_sub  = "【BITCOIN】自動売買システム".$title;
-	$mail_body = $msg."\r\n";
-	$headers = 'From:'.$mail_from."\r\n".'Reply-To:'.$mail_from."\r\n";
-	$ret = mail($mail_to,$mail_sub,$mail_body,$headers);
+// 関数定義（ログ出力）
+function putLog($message)
+{
+	echo date("Y-m-d H:i:s")  . "\t" . $message;
+	error_log(date("Y-m-d H:i:s") . "\t" . $message . "\r\n", 3, PATH_LOG_FILE);
 }
 
-// ログ出力
-function putLog($msg) {
-	global $dtime,$file_log;
-	error_log($dtime." ".$msg."\r\n",3,$file_log);
-	echo $msg;
+// 関数定義（注文実行）
+function sendChildOrder($arrQuery)
+{
+	$timestamp = time() . substr(microtime(), 2, 3);
+	$body = json_encode($arrQuery);
+	$header = array(
+		'ACCESS-KEY:'		. BITFLYER_API_KEY,
+		'ACCESS-TIMESTAMP:'	. $timestamp,
+		'ACCESS-SIGN:'		. hash_hmac(
+			'sha256',
+			$timestamp . 'POST/' . explode('/', BITFLYER_API_URI, 5)[3] . '/me/sendchildorder' . $body,
+			BITFLYER_API_SECRET
+		),
+		'Content-Type:'		. 'application/json',
+		'Content-Length:'	. strlen($body),
+	);
+	$context = stream_context_create(array(
+		'http' => array(
+			'method' => 'POST',
+			'header' => implode(PHP_EOL, $header),
+			'content' => $body,
+		)
+	));
+	$http_response_header = array();
+	$result = json_decode(file_get_contents(BITFLYER_API_URI . 'me/sendchildorder', false, $context), true);
+	$orderid = $result["child_order_acceptance_id"];
+	if (!$orderid) putLog('【APIエラー】' . "\t" . var_export($result, true) . " " . var_export($http_response_header, true) . " " . var_export($body, true));
+	return $orderid ? true : false;
 }
 
-// 注文判定
-function orderJudgment() {
-	global $file_last_si,$file_last_rc,$pre_si, $pre_cc, $last_cc, $diff_cc, $diff_msg;
-	switch( $pre_si ){
-	case "SELL":
-		if( $diff_cc < -100  && $diff_cc > -500000) {
-			$para = array(	"rate" => 0,
-							"amount" => 0,
-							"market_buy_amount" => round( $last_cc  * 0.005 , -1),
-							"order_type" => "market_buy",
-							"pair" => "btc_jpy",
-						);
-			$res = sendChildOrder($para);
-			file_put_contents($file_last_si,"BUY");
-			file_put_contents($file_last_rc,$last_cc);
-			putLog("購入：".$diff_msg." ".var_export($res,true) );
-			putMail("【購入しました】：".$diff_msg);
-		} else {
-			putLog("取引なし:".$diff_msg);
-		}
-		break;
+
+/*!------------------------------------------------
+ * 自動売買処理
+ * ------------------------------------------------
+ */
+
+// 前回の最終価格・注文区分を取得
+$previous_last = intval(file_get_contents(PATH_DATA_LAST));
+$previous_order = file_get_contents(PATH_DATA_ORDER);
+
+// 現在の最終価格を取得
+$current_data = json_decode(file_get_contents(BITFLYER_API_URI . 'getticker?product_code=BTC_JPY'), true);
+$current_last = intval($current_data["ltp"]);
+
+// 前回と現在の差分価格を取得（前回情報がない場合は初期値設定）
+if ($previous_order == '') $previous_order = 'SELL';
+if ($previous_last === 0) file_put_contents(PATH_DATA_LAST, $current_last);
+$diff_last = intval($current_last - $previous_last);
+$diff_message = '前回：' . number_format($previous_last) . '（' . $previous_order . '）→今回：' . number_format($current_last) . '（' . sprintf("%+d", $diff_last) . '）';
+
+// 注文処理
+$isSendChildOrder = false;
+switch ($previous_order) {
 	case "BUY":
-		if( $diff_cc > 100   && $diff_cc < 500000) {
-			$para = array(	"rate" => 0,
-							"amount" => 0.005,
-							"order_type" => "market_sell",
-							"pair" => "btc_jpy",
-						);
-			$res = sendChildOrder($para);
-			file_put_contents($file_last_si,"SELL");
-			file_put_contents($file_last_rc,$last_cc);
-			putLog("売却：".$diff_msg." ".var_export($res,true) );
-			putMail("【売却しました】：".$diff_msg);
-		} else {
-			putLog("取引なし:".$diff_msg);
-		}
+		$order_param['side'] = 'SELL';
+		if ($diff_last > $order_sell_price[0] && $diff_last < $order_sell_price[1])
+			$isSendChildOrder = sendChildOrder($order_param);
+		break;
+	case "SELL":
+		$order_param['side'] = 'BUY';
+		if ($diff_last > $order_buy_price[0] && $diff_last < $order_buy_price[1])
+			$isSendChildOrder = sendChildOrder($order_param);
 		break;
 	default:
-		putLog("不正★".$diff_msg);
-	}
+		putLog('【注文エラー】' . "\t" . $diff_message);
 }
 
-// オーダ実行
-function sendChildOrder($arrQuery) {
-	$intNonce5 = time();
-	$strUrl5 = 'https://coincheck.jp/api/exchange/orders';
-	$strAccessKey5 = 'アクセスキー';
-	$strAccessSecret5 = '秘密鍵';
-	$strMessage5 = $intNonce5 . $strUrl5 . http_build_query($arrQuery);
-	$strSignature5 = hash_hmac("sha256", $strMessage5, $strAccessSecret5);
-	$header5 = array(
-		'Content-Type: application/x-www-form-urlencoded',
-		'ACCESS-KEY: '.$strAccessKey5,
-		'ACCESS-NONCE: '.$intNonce5,
-		'ACCESS-SIGNATURE: '.$strSignature5
-	);
-	$context5 = array(  'http' => array(
-						'method' =>'POST',
-						'ignore_errors' => true,
-						'header' => implode("\r\n",$header5),
-						'content' => http_build_query($arrQuery5)
-					));
-//	$coincheck = file_get_contents($strUrl5, false, stream_context_create($context5));
-	return $coincheck;
+// 結果出力
+if ($isSendChildOrder) {
+	file_put_contents(PATH_DATA_ORDER, $order_param['side']);
+	file_put_contents(PATH_DATA_LAST, $current_last);
+	putLog(($order_param['side'] === 'SELL' ? '【売却】' : '【購入】') . "\t" . $diff_message);
+} else {
+	putLog('【取引なし】' . "\t" . $diff_message);
 }
 
-
-?>
+exit;
