@@ -1,8 +1,6 @@
 <?php
-
 /*! 
  *  ビットコイン自動売買システム
- *  http://saneicraft.sakura.ne.jp/cron/bitcoin.php
  **/
 
 	// スケジュール実行日時
