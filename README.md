@@ -31,8 +31,8 @@ PHP環境にて動作します。レンタルサーバ（さくらインター�
 |:---:|:---:|:---:|:---|
 |bitFlyer.php |BITFLYER_API_KEY    |API Key   |【API Key】の箇所にAPI有効化画面の API Keyを転記 |
 |             |BITFLYER_API_SECRET |API Secret|【API Secret】の箇所にAPI有効化画面の API Secretを転記|
-|coincheck.php| 未                 | 未         | 未  |
-|bitbank.php  | 未                 | 未         | 未  |
+|coincheck.php| －                 | －         | －  |
+|bitbank.php  | －                 | －         | －  |
 
 
 #### 3. サーバに配置し実行
